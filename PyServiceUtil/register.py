@@ -1,16 +1,13 @@
 #!/usr/bin/env python
 # encoding: utf-8
 
-import sys
 import time
 import logging
 import threading
 import grpc  # type: ignore
+
 from client import V3Client  # type: ignore
-from random import randint
-from etcd3.leases import Lease  # type: ignore
-from etcd3.transactions import Put  # type: ignore
-from etcd3.exceptions import Etcd3Exception
+from etcd3.exceptions import Etcd3Exception  # type: ignore
 
 
 class RegSvcClient(object):
@@ -40,10 +37,13 @@ class RegSvcClient(object):
 
         self.set_logger(logger)
 
-        lease = Lease(randint(1000000, 2000000), service_ttl, self.client)
-
-        key = "/".join([key_prefix, svc_id, svc_name])
-        Put(key=key, value=svc_address, lease=lease)
+        try:
+            lease = self.client.lease(ttl=service_ttl)
+            key = "/".join([key_prefix, svc_id, svc_name])
+            self.client.put(key=key, value=svc_address.encode("utf8"), lease=lease)
+        except Etcd3Exception as exc:
+            print("Etcd3Exception:", str(exc))
+            raise exc
 
         def thread_callback(args: RegSvcClient):
             while True:
@@ -56,10 +56,10 @@ class RegSvcClient(object):
                     resp = lease.refresh()
                     args.logger.info("keep alive response %s at %s", str(resp).replace("\n", ""), time.asctime())
                 except grpc.RpcError as exc:
-                    args.logger.info("[Cancel] keep alive at %s", time.asctime())
+                    args.logger.info("[RpcError] keep alive at %s", time.asctime())
                     break
                 except Etcd3Exception as exc:
-                    print("Etcd3Exception:", str(exc))
+                    args.logger.info("[Etcd3Exception] keep alive at %s", time.asctime())
                     break
 
                 time.sleep(keep_alive)
@@ -67,16 +67,3 @@ class RegSvcClient(object):
         thread_id = threading.Thread(target=thread_callback, args=(self,))
         thread_id.setDaemon(True)
         thread_id.start()
-
-
-if __name__ == "__main__":
-    logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
-
-    endpoints = (("127.0.0.1", 12379), ("127.0.0.1", 22379), ("127.0.0.1", 32379))
-    cli = RegSvcClient(endpoints)
-    cli.register_service(5, 30, "", "test", "key", "value", logging)
-
-    time.sleep(30)
-    cli.stop()
-
-    time.sleep(10)
